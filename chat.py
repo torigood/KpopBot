@@ -13,7 +13,7 @@ load_dotenv()
 # Embedding model
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2", 
-   model_kwargs={"device": "mps"}  # M4 GPU
+    model_kwargs={"device": "mps"}  # M4 GPU
 )
 
 # 1. Vector DB Load
