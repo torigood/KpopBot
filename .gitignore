@@ -1,0 +1,9 @@
+.env
+
+checkVectorDB.py
+
+.DS_Store
+
+Data/
+
+kpopBot_venv/
