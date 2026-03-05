@@ -67,39 +67,93 @@ qa_chain = RetrievalQA.from_chain_type(
     return_source_documents=True  # To return source documents along with the answer
 )
 
+# ========== Similarity Score Calculator ==========
+def calculate_similarity_score(user_question: str, top_k: int = 5) -> tuple:
+    """
+    Calculate average similarity score from vector DB search results.
+    
+    Returns:
+        tuple: (average_score, confidence_level, similarity_scores)
+    """
+    # Search with scores from vector DB
+    results_with_scores = vector_db.similarity_search_with_scores(user_question, k=top_k)
+    
+    if not results_with_scores:
+        return 0.0, "Low", []
+    
+    # Extract scores (Chroma returns scores as distances, convert to similarity)
+    # Lower distance = higher similarity, so we use 1 / (1 + distance)
+    similarity_scores = [1 / (1 + score) for _, score in results_with_scores]
+    avg_score = sum(similarity_scores) / len(similarity_scores)
+    
+    # Determine confidence level
+    if avg_score >= 0.85:
+        confidence_level = "Very High"
+    elif avg_score >= 0.70:
+        confidence_level = "High"
+    elif avg_score >= 0.55:
+        confidence_level = "Medium"
+    elif avg_score >= 0.40:
+        confidence_level = "Low"
+    else:
+        confidence_level = "Very Low"
+    
+    return avg_score, confidence_level, similarity_scores
+
 # ========== Chat Function ==========
 def chat_with_ollama(user_question: str):
     """
-    result = qa_chain.invoke({"query": user_question})
+    Chat with Ollama LLM using vector DB retrieval and similarity scoring.
     
-    # Calculate average score from source documents
-    avg_score = sum([doc.metadata.get('score', 0) 
-                     for doc in result['source_documents']]) / len(result['source_documents'])
-    
-    confidence = "High" if avg_score > 0.7 else "Medium" if avg_score > 0.5 else "Low"
-    print(f"Confidence: {confidence} (Score: {avg_score:.2f})")
-    
-    if avg_score < 0.5:
-        print(" Warning: Not enought Documents.")
+    Returns:
+        dict: Contains 'answer', 'avg_score', 'confidence_level', 'sources'
     """
     try:
         print(f"\n Searching...: '{user_question}'")
+        
+        # 1. Calculate similarity score from vector DB
+        avg_score, confidence_level, similarity_scores = calculate_similarity_score(user_question, top_k=5)
+        
+        # 2. Get answer from QA chain
         result = qa_chain.invoke({"query": user_question})
         
-        # Print answer
-        print(f"\n Answers \n{result['result']}")
+        # 3. Print answer
+        print(f"\n Answer:\n{result['result']}")
         
-        # Print reference information (optional)
+        # 4. Print accuracy score based on vector DB similarity
+        print(f"\n Accuracy Score:")
+        print(f"   Average Similarity: {avg_score:.2%}")
+        print(f"   Confidence Level: {confidence_level}")
+        
+        # Determine recommendation based on score
+        if avg_score < 0.4:
+            print(f"    Warning: Low relevance. Search results may not match the question well.")
+        
+        # 5. Print individual similarity scores
+        if similarity_scores:
+            print(f"\n   Individual Scores:")
+            for i, score in enumerate(similarity_scores, 1):
+                print(f"     Document {i}: {score:.2%}")
+        
+        # 6. Print reference information
         if result.get('source_documents'):
-            print(f"\n Referecne Info ({len(result['source_documents'])}개):")
+            print(f"\n Reference Info ({len(result['source_documents'])}개):")
             for i, doc in enumerate(result['source_documents'], 1):
-                print(f"  {i}. {doc.metadata}")
+                print(f"   {i}. {doc.metadata}")
         
-        return result['result']
+        # 7. Return structured result
+        return {
+            'answer': result['result'],
+            'avg_score': avg_score,
+            'confidence_level': confidence_level,
+            'similarity_scores': similarity_scores,
+            'sources': [doc.metadata for doc in result.get('source_documents', [])],
+            'num_sources': len(result.get('source_documents', []))
+        }
         
     except Exception as e:
         print(f"\n Error: {e}")
-        print("    Ollama: Check Ollama server:")
+        print("   Ollama: Check Ollama server:")
         print("   OLLAMA_HOST=127.0.0.1:11435 ollama serve")
         return None
 
