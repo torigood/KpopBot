@@ -76,14 +76,27 @@ def calculate_similarity_score(user_question: str, top_k: int = 5) -> tuple:
         tuple: (average_score, confidence_level, similarity_scores)
     """
     # Search with scores from vector DB
-    results_with_scores = vector_db.similarity_search_with_scores(user_question, k=top_k)
+    try:
+        # Try the newer method first
+        results = vector_db.query(query_texts=[user_question], n_results=top_k)
+        
+        if not results or not results.get('distances') or len(results['distances']) == 0:
+            return 0.0, "Low", []
+        
+        # Extract scores from distances (Chroma returns distances as lists)
+        # Lower distance = higher similarity, so we use 1 / (1 + distance)
+        distances = results['distances'][0]  # Get first list of distances
+        similarity_scores = [1 / (1 + score) for score in distances]
+    except:
+        # Fallback to old method
+        results_with_scores = vector_db.similarity_search_with_scores(user_question, k=top_k)
+        if not results_with_scores:
+            return 0.0, "Low", []
+        similarity_scores = [1 / (1 + score) for _, score in results_with_scores]
     
-    if not results_with_scores:
+    if not similarity_scores:
         return 0.0, "Low", []
     
-    # Extract scores (Chroma returns scores as distances, convert to similarity)
-    # Lower distance = higher similarity, so we use 1 / (1 + distance)
-    similarity_scores = [1 / (1 + score) for _, score in results_with_scores]
     avg_score = sum(similarity_scores) / len(similarity_scores)
     
     # Determine confidence level
