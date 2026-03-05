@@ -53,7 +53,7 @@ At the end of your answer, provide a confidence score (1-10) based on:
 - 4-5: Limited source information, answer may lack depth
 - 1-3: Minimal or no direct information in sources, answer is somewhat speculative
 
-If confidence is below 5, add a disclaimer: "⚠️ Note: This answer is based on limited information from available sources."
+If confidence is below 5, add a disclaimer: "Note: This answer is based on limited information from available sources."
 
 Reference Information:
 {context}
@@ -107,8 +107,8 @@ def calculate_similarity_score(user_question: str, top_k: int = 5) -> tuple:
             else:
                 avg_score = 0.3
             
-            # Check if results have low quality (all scores below 0.5)
-            if avg_score < 0.5:
+            # Check if results have low quality (all scores below 0.4)
+            if avg_score < 0.4:
                 has_low_quality_results = True
         else:
             avg_score = 0.2  # Very low when no results
@@ -121,14 +121,14 @@ def calculate_similarity_score(user_question: str, top_k: int = 5) -> tuple:
         has_low_quality_results = True
         print(f"Warning: Error calculating similarity scores: {e}")
     
-    # Determine confidence level - stricter thresholds
-    if avg_score >= 0.80:
+    # Determine confidence level - calibrated thresholds
+    if avg_score >= 0.70:
         confidence_level = "Very High"
-    elif avg_score >= 0.65:
+    elif avg_score >= 0.55:
         confidence_level = "High"
-    elif avg_score >= 0.50:
+    elif avg_score >= 0.40:
         confidence_level = "Medium"
-    elif avg_score >= 0.35:
+    elif avg_score >= 0.25:
         confidence_level = "Low"
     else:
         confidence_level = "Very Low"
@@ -144,14 +144,14 @@ def chat_with_ollama(user_question: str):
         dict: Contains 'answer', 'avg_score', 'confidence_level', 'sources'
     """
     try:
-        print(f"\n🔍 Searching: '{user_question}'")
+        print(f"\n검색 중: '{user_question}'")
         
         # 1. Calculate similarity score from vector DB
         avg_score, confidence_level, similarity_scores, has_low_quality = calculate_similarity_score(user_question, top_k=5)
         
         # 2. Add warning if search quality is poor
         if has_low_quality:
-            print(f"⚠️  WARNING: Search results have LOW relevance to your question.")
+            print(f"경고: 검색 결과의 관련성이 낮습니다.")
             print(f"   The answer may be inaccurate or incomplete.")
         
         # 2. Get answer from QA chain
@@ -167,41 +167,40 @@ def chat_with_ollama(user_question: str):
         final_confidence = min(llm_confidence / 10, avg_score) if llm_confidence else avg_score
         
         # Determine final confidence level
-        if final_confidence >= 0.80:
+        if final_confidence >= 0.70:
             final_confidence_level = "Very High"
-        elif final_confidence >= 0.65:
+        elif final_confidence >= 0.55:
             final_confidence_level = "High"
-        elif final_confidence >= 0.50:
+        elif final_confidence >= 0.40:
             final_confidence_level = "Medium"
-        elif final_confidence >= 0.35:
+        elif final_confidence >= 0.25:
             final_confidence_level = "Low"
         else:
             final_confidence_level = "Very Low"
         
         # 3. Print answer
-        print(f"\n📊 Answer:\n{answer_text}")
+        print(f"\n답변:\n{answer_text}")
         
         # 4. Print accuracy score
-        print(f"\n📈 Accuracy Metrics:")
-        print(f"   • Vector Similarity Score: {avg_score:.1%}")
-        print(f"   • Confidence Level: {final_confidence_level}")
-        print(f"   • Source Documents: {len(result.get('source_documents', []))}")
+        print(f"\n정확도 지표:")
+        print(f"   * 벡터 유사도 점수: {avg_score:.1%}")
+        print(f"   * 신뢰도: {final_confidence_level}")
+        print(f"   * 참고 문서 수: {len(result.get('source_documents', []))}")
         
         # 5. Print quality warning if needed
-        if final_confidence < 0.5:
-            print(f"\n   ⚠️  NOTICE: Low confidence in this answer.")
+        if final_confidence < 0.40:
+            print(f"\n   주의: 이 답변의 신뢰도가 낮습니다.")
             print(f"      Please verify with additional sources or ask for more specific information.")
         
         # 6. Print individual similarity scores
         if similarity_scores:
             print(f"\n   Document Relevance Scores:")
             for i, score in enumerate(similarity_scores, 1):
-                bar = "█" * int(score * 10) + "░" * (10 - int(score * 10))
-                print(f"     [{bar}] Doc {i}: {score:.1%}")
+                print(f"     Doc {i}: {score:.1%}")
         
         # 7. Print reference information
         if result.get('source_documents'):
-            print(f"\n📚 Reference Info ({len(result['source_documents'])} sources):")
+            print(f"\n참고 자료 ({len(result['source_documents'])}개 출처):")
             for i, doc in enumerate(result['source_documents'], 1):
                 source_info = doc.metadata.get('source', 'Unknown')
                 company = doc.metadata.get('company', '?')
@@ -221,7 +220,7 @@ def chat_with_ollama(user_question: str):
         }
         
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n오류: {e}")
         print("   Please check if Ollama server is running:")
         print("   OLLAMA_HOST=127.0.0.1:11435 ollama serve")
         return None
