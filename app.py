@@ -31,34 +31,34 @@ def init_qa_chain():
         temperature=0
     )
 
-    template = """당신은 K-Pop 엔터테인먼트 재정 및 비즈니스 분석 전문가입니다.
-당신의 작업은 제공된 참고 정보만을 기반으로 질문에 답하는 것입니다.
+    template = """You are a K-Pop entertainment expert in financial and business analysis.
+Your task is to answer questions based ONLY on the provided reference information.
 
-**필수 규칙:**
-1. 제공된 문서의 정보만을 바탕으로 답변합니다.
-2. 문서에 충분한 정보가 없으면 "죄송하지만 이 질문에 대해 정확하게 답변할 충분한 정보가 없습니다."라고 명시합니다.
-3. 문서에 언급되지 않은 특정 아티스트/그룹에 관한 질문은 "해당 정보는 제공된 자료에 없습니다."라고 표시합니다.
-4. 제공된 정보 이외의 일반적인 지식으로 답변하지 않습니다.
-5. 모든 주장에 대해 출처를 명시합니다 (회사명, 연도, 분기).
+**CRITICAL RULES:**
+1. Base your answer ONLY on the provided context documents.
+2. If the context does NOT contain sufficient information to answer the question, MUST state: "I don't have sufficient information to answer this question accurately."
+3. If the question asks about specific artists/groups not mentioned in context, say you lack that specific information.
+4. DO NOT make assumptions or provide general knowledge not in the context.
+5. Always cite the source document for each claim (company, year, quarter).
 
-**답변 형식:**
-- 마크다운 형식의 명확한 섹션
-- 글머리 기호 사용
-- 출처를 포함한 구체적인 데이터 인용 (예: "HYBE 2023년 2분기에 따르면...")
-- 모든 데이터에 연도와 분기 포함
+**ANSWER FORMAT:**
+- Use markdown format with clear sections
+- Use bullet points for easy reading
+- Cite specific data with sources (e.g., "According to HYBE 2023 Q2...")
+- Provide year and quarter for all data
 
-**신뢰도 평가:**
-답변 끝에 신뢰도 점수(1-10)를 제공합니다:
-- 8-10: 제공된 문서에 직접 명시된 정보, 충분히 지원됨
-- 6-7: 문서의 정보이지만 해석이 필요할 수 있음
-- 4-5: 제한된 문서 정보, 답변이 불완전할 수 있음
-- 1-3: 문서에 최소한의 정보만 있거나 없음, 추정성이 높음
+**CONFIDENCE ASSESSMENT:**
+At the end of your answer, provide a confidence score (1-10) based on:
+- 8-10: Information is directly from provided source documents, well-supported
+- 6-7: Information is from source documents but may require interpretation
+- 4-5: Limited source information, answer may lack depth
+- 1-3: Minimal or no direct information in sources, answer is somewhat speculative
 
-신뢰도가 5 이하면 다음을 추가합니다: "주의: 이 답변은 제한된 정보를 바탕으로 작성되었습니다."
+If confidence is below 5, add a disclaimer: "Note: This answer is based on limited information from available sources."
 
-참고 자료: {context}
-질문: {question}
-답변:"""
+Reference Information: {context}
+Question: {question}
+Provide your answer with confidence score:"""
     
     prompt = PromptTemplate(template=template, input_variables=["context", "question"])
     
@@ -100,25 +100,29 @@ def calculate_similarity_score(user_question: str, top_k: int = 5) -> tuple:
     
     try:
         # Get retrieval results with actual similarity scores
+        # Chroma uses L2 distance by default (smaller = more similar)
         retriever_results = vector_db.similarity_search_with_scores(user_question, k=top_k)
         
         if retriever_results:
             # Extract actual similarity scores from vector DB
             # LangChain returns (document, score) tuples where score is distance
-            # Convert distance to similarity: similarity = 1 / (1 + distance)
             similarity_scores = []
             for doc, distance in retriever_results:
-                # Normalize distance to similarity score (0-1 range)
-                similarity = 1 / (1 + distance) if distance < 10 else max(0, 1 - distance / 10)
-                similarity_scores.append(similarity)
+                # Chroma L2 distance: convert to similarity (0-1 range)
+                # Lower distance = higher similarity
+                if distance <= 1.0:
+                    similarity = 1 - distance
+                else:
+                    similarity = 1 / (1 + distance)
+                similarity_scores.append(max(0, min(1, similarity)))  # Clamp to 0-1
             
             if similarity_scores:
                 avg_score = sum(similarity_scores) / len(similarity_scores)
             else:
                 avg_score = 0.3
             
-            # Check if results have low quality (all scores below 0.5)
-            if avg_score < 0.5:
+            # Check if results have low quality (all scores below 0.4)
+            if avg_score < 0.4:
                 has_low_quality_results = True
         else:
             avg_score = 0.2  # Very low when no results
@@ -132,15 +136,15 @@ def calculate_similarity_score(user_question: str, top_k: int = 5) -> tuple:
     
     # Determine confidence level - calibrated thresholds
     if avg_score >= 0.70:
-        confidence_level = "Very High"
+        confidence_level = "매우 높음"
     elif avg_score >= 0.55:
-        confidence_level = "High"
+        confidence_level = "높음"
     elif avg_score >= 0.40:
-        confidence_level = "Medium"
+        confidence_level = "중간"
     elif avg_score >= 0.25:
-        confidence_level = "Low"
+        confidence_level = "낮음"
     else:
-        confidence_level = "Very Low"
+        confidence_level = "매우 낮음"
     
     return avg_score, confidence_level, similarity_scores, has_low_quality_results
 

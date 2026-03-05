@@ -90,17 +90,21 @@ def calculate_similarity_score(user_question: str, top_k: int = 5) -> tuple:
     
     try:
         # Get retrieval results with actual similarity scores
+        # Chroma uses L2 distance by default (smaller = more similar)
         retriever_results = vector_db.similarity_search_with_scores(user_question, k=top_k)
         
         if retriever_results:
             # Extract actual similarity scores from vector DB
             # LangChain returns (document, score) tuples where score is distance
-            # Convert distance to similarity: similarity = 1 / (1 + distance)
             similarity_scores = []
             for doc, distance in retriever_results:
-                # Normalize distance to similarity score (0-1 range)
-                similarity = 1 / (1 + distance) if distance < 10 else max(0, 1 - distance / 10)
-                similarity_scores.append(similarity)
+                # Chroma L2 distance: convert to similarity (0-1 range)
+                # Lower distance = higher similarity
+                if distance <= 1.0:
+                    similarity = 1 - distance
+                else:
+                    similarity = 1 / (1 + distance)
+                similarity_scores.append(max(0, min(1, similarity)))  # Clamp to 0-1
             
             if similarity_scores:
                 avg_score = sum(similarity_scores) / len(similarity_scores)
@@ -119,19 +123,19 @@ def calculate_similarity_score(user_question: str, top_k: int = 5) -> tuple:
         avg_score = 0.2
         similarity_scores = []
         has_low_quality_results = True
-        print(f"Warning: Error calculating similarity scores: {e}")
+        print(f"주의: 유사도 계산 오류: {e}")
     
     # Determine confidence level - calibrated thresholds
     if avg_score >= 0.70:
-        confidence_level = "Very High"
+        confidence_level = "매우 높음"
     elif avg_score >= 0.55:
-        confidence_level = "High"
+        confidence_level = "높음"
     elif avg_score >= 0.40:
-        confidence_level = "Medium"
+        confidence_level = "중간"
     elif avg_score >= 0.25:
-        confidence_level = "Low"
+        confidence_level = "낮음"
     else:
-        confidence_level = "Very Low"
+        confidence_level = "매우 낮음"
     
     return avg_score, confidence_level, similarity_scores, has_low_quality_results
 
