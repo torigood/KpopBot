@@ -30,28 +30,37 @@ llm = ChatOllama(model="llama3.1",
 # To start ollama server, run: OLLAMA_HOST=127.0.0.1:11435   ollama serve
 
 # ========== Prompt Template ==========
-CUSTOM_PROMPT_TEMPLATE = """You are a K-Pop entertainment expert financial and business analysis.
-Based on the given information, answer the questions as accurately as possible.
-- If you don't know the answer, just say that you don't know. DO NOT try to make up an answer.
-- Provide your answer in markdown format.
-- Provide references to support your answer using the source documents provided(Its name).
-- Use bullet points, tables, and other formatting tools to make the answer easy to read and understand.
-- Provide concise and clear answers.
-- If there is specific data or statistics, cite them properly.
-- If possible, provide year and quarter for the data.
+CUSTOM_PROMPT_TEMPLATE = """You are a K-Pop entertainment expert in financial and business analysis.
+Your task is to answer questions based ONLY on the provided reference information.
 
-- At the end of your answer, provide a summary of key points in bullet format.
-- At the end of you answer, provide your answers trusted scores based on the following criteria:
-  - 0-2: Low confidence, information may be inaccurate or incomplete.
-  - 3-5: Moderate confidence, information is somewhat reliable but may lack depth.
-  - 6-8: High confidence, information is reliable and well-supported.
-  - 9-10: Very high confidence, information is accurate, comprehensive, and well-supported.
+**CRITICAL RULES:**
+1. Base your answer ONLY on the provided context documents.
+2. If the context does NOT contain sufficient information to answer the question, MUST state: "I don't have sufficient information to answer this question accurately."
+3. If the question asks about specific artists/groups not mentioned in context, say you lack that specific information.
+4. DO NOT make assumptions or provide general knowledge not in the context.
+5. Always cite the source document for each claim (company, year, quarter).
+
+**ANSWER FORMAT:**
+- Use markdown format with clear sections
+- Use bullet points for easy reading
+- Cite specific data with sources (e.g., "According to HYBE 2023 Q2...")
+- Provide year and quarter for all data
+
+**CONFIDENCE ASSESSMENT:**
+At the end of your answer, provide a confidence score (1-10) based on:
+- 8-10: Information is directly from provided source documents, well-supported
+- 6-7: Information is from source documents but may require interpretation
+- 4-5: Limited source information, answer may lack depth
+- 1-3: Minimal or no direct information in sources, answer is somewhat speculative
+
+If confidence is below 5, add a disclaimer: "⚠️ Note: This answer is based on limited information from available sources."
 
 Reference Information:
 {context}
 
 Question: {question}
-Answer: """
+
+Provide your answer with confidence score:"""
 
 custom_prompt =  PromptTemplate(
     template=CUSTOM_PROMPT_TEMPLATE,
@@ -70,44 +79,61 @@ qa_chain = RetrievalQA.from_chain_type(
 # ========== Similarity Score Calculator ==========
 def calculate_similarity_score(user_question: str, top_k: int = 5) -> tuple:
     """
-    Calculate average similarity score from vector DB search results.
+    Calculate average similarity score from vector DB search results using actual embeddings.
     
     Returns:
-        tuple: (average_score, confidence_level, similarity_scores)
+        tuple: (average_score, confidence_level, similarity_scores, has_low_quality_results)
     """
+    avg_score = 0.3  # Default low score for no results
+    similarity_scores = []
+    has_low_quality_results = False
+    
     try:
-        # Try query method (newer Chroma API)
-        results = vector_db.query(query_texts=[user_question], n_results=top_k)
+        # Get retrieval results with actual similarity scores
+        retriever_results = vector_db.similarity_search_with_scores(user_question, k=top_k)
         
-        if results and results.get('distances') and len(results['distances']) > 0:
-            distances = results['distances'][0]
-            similarity_scores = [1 / (1 + score) for score in distances]
-            avg_score = sum(similarity_scores) / len(similarity_scores)
-        else:
-            return 0.5, "Medium", [0.5] * top_k
+        if retriever_results:
+            # Extract actual similarity scores from vector DB
+            # LangChain returns (document, score) tuples where score is distance
+            # Convert distance to similarity: similarity = 1 / (1 + distance)
+            similarity_scores = []
+            for doc, distance in retriever_results:
+                # Normalize distance to similarity score (0-1 range)
+                similarity = 1 / (1 + distance) if distance < 10 else max(0, 1 - distance / 10)
+                similarity_scores.append(similarity)
             
+            if similarity_scores:
+                avg_score = sum(similarity_scores) / len(similarity_scores)
+            else:
+                avg_score = 0.3
+            
+            # Check if results have low quality (all scores below 0.5)
+            if avg_score < 0.5:
+                has_low_quality_results = True
+        else:
+            avg_score = 0.2  # Very low when no results
+            has_low_quality_results = True
+    
     except Exception as e:
-        # Fallback: return default scores
-        return 0.5, "Medium", [0.5] * top_k
+        # Final fallback
+        avg_score = 0.2
+        similarity_scores = []
+        has_low_quality_results = True
+        print(f"Warning: Error calculating similarity scores: {e}")
     
-    if not similarity_scores:
-        return 0.5, "Medium", [0.5] * top_k
-    
-    avg_score = sum(similarity_scores) / len(similarity_scores)
-    
-    # Determine confidence level
-    if avg_score >= 0.85:
+    # Determine confidence level - stricter thresholds
+    if avg_score >= 0.80:
         confidence_level = "Very High"
-    elif avg_score >= 0.70:
+    elif avg_score >= 0.65:
         confidence_level = "High"
-    elif avg_score >= 0.55:
+    elif avg_score >= 0.50:
         confidence_level = "Medium"
-    elif avg_score >= 0.40:
+    elif avg_score >= 0.35:
         confidence_level = "Low"
     else:
         confidence_level = "Very Low"
     
-    return avg_score, confidence_level, similarity_scores
+    return avg_score, confidence_level, similarity_scores, has_low_quality_results
 
 # ========== Chat Function ==========
 def chat_with_ollama(user_question: str):
@@ -118,53 +144,115 @@ def chat_with_ollama(user_question: str):
         dict: Contains 'answer', 'avg_score', 'confidence_level', 'sources'
     """
     try:
-        print(f"\n Searching...: '{user_question}'")
+        print(f"\n🔍 Searching: '{user_question}'")
         
         # 1. Calculate similarity score from vector DB
-        avg_score, confidence_level, similarity_scores = calculate_similarity_score(user_question, top_k=5)
+        avg_score, confidence_level, similarity_scores, has_low_quality = calculate_similarity_score(user_question, top_k=5)
+        
+        # 2. Add warning if search quality is poor
+        if has_low_quality:
+            print(f"⚠️  WARNING: Search results have LOW relevance to your question.")
+            print(f"   The answer may be inaccurate or incomplete.")
         
         # 2. Get answer from QA chain
         result = qa_chain.invoke({"query": user_question})
         
+        # 3. Extract answer and confidence level from LLM response
+        answer_text = result['result']
+        
+        # Extract confidence score from LLM response if provided
+        llm_confidence = extract_confidence_from_answer(answer_text)
+        
+        # 4. Adjust final confidence: Use vector similarity if LLM confidence is unclear
+        final_confidence = min(llm_confidence / 10, avg_score) if llm_confidence else avg_score
+        
+        # Determine final confidence level
+        if final_confidence >= 0.80:
+            final_confidence_level = "Very High"
+        elif final_confidence >= 0.65:
+            final_confidence_level = "High"
+        elif final_confidence >= 0.50:
+            final_confidence_level = "Medium"
+        elif final_confidence >= 0.35:
+            final_confidence_level = "Low"
+        else:
+            final_confidence_level = "Very Low"
+        
         # 3. Print answer
-        print(f"\n Answer:\n{result['result']}")
+        print(f"\n📊 Answer:\n{answer_text}")
         
-        # 4. Print accuracy score based on vector DB similarity
-        print(f"\n Accuracy Score:")
-        print(f"   Average Similarity: {avg_score:.2%}")
-        print(f"   Confidence Level: {confidence_level}")
+        # 4. Print accuracy score
+        print(f"\n📈 Accuracy Metrics:")
+        print(f"   • Vector Similarity Score: {avg_score:.1%}")
+        print(f"   • Confidence Level: {final_confidence_level}")
+        print(f"   • Source Documents: {len(result.get('source_documents', []))}")
         
-        # Determine recommendation based on score
-        if avg_score < 0.4:
-            print(f"    Warning: Low relevance. Search results may not match the question well.")
+        # 5. Print quality warning if needed
+        if final_confidence < 0.5:
+            print(f"\n   ⚠️  NOTICE: Low confidence in this answer.")
+            print(f"      Please verify with additional sources or ask for more specific information.")
         
-        # 5. Print individual similarity scores
+        # 6. Print individual similarity scores
         if similarity_scores:
-            print(f"\n   Individual Scores:")
+            print(f"\n   Document Relevance Scores:")
             for i, score in enumerate(similarity_scores, 1):
-                print(f"     Document {i}: {score:.2%}")
+                bar = "█" * int(score * 10) + "░" * (10 - int(score * 10))
+                print(f"     [{bar}] Doc {i}: {score:.1%}")
         
-        # 6. Print reference information
+        # 7. Print reference information
         if result.get('source_documents'):
-            print(f"\n Reference Info ({len(result['source_documents'])}개):")
+            print(f"\n📚 Reference Info ({len(result['source_documents'])} sources):")
             for i, doc in enumerate(result['source_documents'], 1):
-                print(f"   {i}. {doc.metadata}")
+                source_info = doc.metadata.get('source', 'Unknown')
+                company = doc.metadata.get('company', '?')
+                year = doc.metadata.get('year', '?')
+                quarter = doc.metadata.get('quarter', '?')
+                print(f"   {i}. {company} {year} {quarter} - {source_info}")
         
-        # 7. Return structured result
+        # 8. Return structured result
         return {
-            'answer': result['result'],
+            'answer': answer_text,
             'avg_score': avg_score,
-            'confidence_level': confidence_level,
+            'confidence_level': final_confidence_level,
             'similarity_scores': similarity_scores,
             'sources': [doc.metadata for doc in result.get('source_documents', [])],
-            'num_sources': len(result.get('source_documents', []))
+            'num_sources': len(result.get('source_documents', [])),
+            'has_low_quality': has_low_quality
         }
         
     except Exception as e:
-        print(f"\n Error: {e}")
-        print("   Ollama: Check Ollama server:")
+        print(f"\n❌ Error: {e}")
+        print("   Please check if Ollama server is running:")
         print("   OLLAMA_HOST=127.0.0.1:11435 ollama serve")
         return None
+
+
+def extract_confidence_from_answer(answer_text: str) -> int:
+    """
+    Extract confidence score from LLM answer text.
+    Looks for patterns like "Confidence: 7" or "confidence score: 8"
+    
+    Returns:
+        int: Confidence score (1-10), or None if not found
+    """
+    import re
+    
+    # Look for confidence patterns
+    patterns = [
+        r'confidence[:\s]+(\d+)',
+        r'confidence\s+score[:\s]+(\d+)',
+        r'score[:\s]+(\d+)',
+        r'\*\*confidence[:\s]+(\d+)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, answer_text.lower())
+        if match:
+            score = int(match.group(1))
+            if 1 <= score <= 10:
+                return score
+    
+    return None
 
 # ==================== Chat Function ====================
 def main():

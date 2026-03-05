@@ -31,10 +31,34 @@ def init_qa_chain():
         temperature=0
     )
 
-    template = """You are a K-Pop entertainment expert financial and business analysis...
-    Context: {context}
-    Question: {question}
-    Answer: """
+    template = """You are a K-Pop entertainment expert in financial and business analysis.
+Your task is to answer questions based ONLY on the provided reference information.
+
+**CRITICAL RULES:**
+1. Base your answer ONLY on the provided context documents.
+2. If the context does NOT contain sufficient information to answer the question, MUST state: "I don't have sufficient information to answer this question accurately."
+3. If the question asks about specific artists/groups not mentioned in context, say you lack that specific information.
+4. DO NOT make assumptions or provide general knowledge not in the context.
+5. Always cite the source document for each claim (company, year, quarter).
+
+**ANSWER FORMAT:**
+- Use markdown format with clear sections
+- Use bullet points for easy reading
+- Cite specific data with sources (e.g., "According to HYBE 2023 Q2...")
+- Provide year and quarter for all data
+
+**CONFIDENCE ASSESSMENT:**
+At the end of your answer, provide a confidence score (1-10) based on:
+- 8-10: Information is directly from provided source documents, well-supported
+- 6-7: Information is from source documents but may require interpretation
+- 4-5: Limited source information, answer may lack depth
+- 1-3: Minimal or no direct information in sources, answer is somewhat speculative
+
+If confidence is below 5, add a disclaimer: "⚠️ Note: This answer is based on limited information from available sources."
+
+Reference Information: {context}
+Question: {question}
+Provide your answer with confidence score:"""
     
     prompt = PromptTemplate(template=template, input_variables=["context", "question"])
     
@@ -65,44 +89,60 @@ vector_db = get_vector_db()
 
 def calculate_similarity_score(user_question: str, top_k: int = 5) -> tuple:
     """
-    Calculate average similarity score from vector DB search results.
+    Calculate average similarity score from vector DB search results using actual embeddings.
     
     Returns:
-        tuple: (average_score, confidence_level, similarity_scores)
+        tuple: (average_score, confidence_level, similarity_scores, has_low_quality_results)
     """
+    avg_score = 0.3  # Default low score for no results
+    similarity_scores = []
+    has_low_quality_results = False
+    
     try:
-        # Try query method (newer Chroma API)
-        results = vector_db.query(query_texts=[user_question], n_results=top_k)
+        # Get retrieval results with actual similarity scores
+        retriever_results = vector_db.similarity_search_with_scores(user_question, k=top_k)
         
-        if results and results.get('distances') and len(results['distances']) > 0:
-            distances = results['distances'][0]
-            similarity_scores = [1 / (1 + score) for score in distances]
-            avg_score = sum(similarity_scores) / len(similarity_scores)
-        else:
-            return 0.5, "Medium", [0.5] * top_k
+        if retriever_results:
+            # Extract actual similarity scores from vector DB
+            # LangChain returns (document, score) tuples where score is distance
+            # Convert distance to similarity: similarity = 1 / (1 + distance)
+            similarity_scores = []
+            for doc, distance in retriever_results:
+                # Normalize distance to similarity score (0-1 range)
+                similarity = 1 / (1 + distance) if distance < 10 else max(0, 1 - distance / 10)
+                similarity_scores.append(similarity)
             
+            if similarity_scores:
+                avg_score = sum(similarity_scores) / len(similarity_scores)
+            else:
+                avg_score = 0.3
+            
+            # Check if results have low quality (all scores below 0.5)
+            if avg_score < 0.5:
+                has_low_quality_results = True
+        else:
+            avg_score = 0.2  # Very low when no results
+            has_low_quality_results = True
+    
     except Exception as e:
-        # Fallback: return default scores
-        return 0.5, "Medium", [0.5] * top_k
+        # Final fallback
+        avg_score = 0.2
+        similarity_scores = []
+        has_low_quality_results = True
     
-    if not similarity_scores:
-        return 0.5, "Medium", [0.5] * top_k
-    
-    avg_score = sum(similarity_scores) / len(similarity_scores)
-    
-    # Determine confidence level
-    if avg_score >= 0.85:
+    # Determine confidence level - stricter thresholds
+    if avg_score >= 0.80:
         confidence_level = "Very High"
-    elif avg_score >= 0.70:
+    elif avg_score >= 0.65:
         confidence_level = "High"
-    elif avg_score >= 0.55:
+    elif avg_score >= 0.50:
         confidence_level = "Medium"
-    elif avg_score >= 0.40:
+    elif avg_score >= 0.35:
         confidence_level = "Low"
     else:
         confidence_level = "Very Low"
     
-    return avg_score, confidence_level, similarity_scores
+    return avg_score, confidence_level, similarity_scores, has_low_quality_results
 
 # --- Manage chat history ---
 if "messages" not in st.session_state:
@@ -125,11 +165,19 @@ if prompt := st.chat_input("K-Pop business questions"):
         with st.spinner("Analyzing data..."):
             try:
                 # Calculate similarity score
-                avg_score, confidence_level, similarity_scores = calculate_similarity_score(prompt, top_k=5)
+                avg_score, confidence_level, similarity_scores, has_low_quality = calculate_similarity_score(prompt, top_k=5)
                 
                 # Get QA response
                 result = qa_chain.invoke({"query": prompt})
                 response = result['result']
+                
+                # Display warning if search quality is poor
+                if has_low_quality:
+                    st.warning(
+                        "⚠️ **Low Search Relevance**: The search results have limited relevance to your question. "
+                        "This answer may be inaccurate or incomplete.",
+                        icon="⚠️"
+                    )
                 
                 # Display bot response
                 st.markdown(response)
@@ -144,25 +192,33 @@ if prompt := st.chat_input("K-Pop business questions"):
                     st.metric("Sources Used", len(result.get('source_documents', [])))
                 
                 # Expandable details
-                with st.expander(" Detailed Accuracy Analysis"):
+                with st.expander("📊 Detailed Accuracy Analysis"):
                     if similarity_scores:
-                        st.write("**Individual Document Similarity Scores:**")
+                        st.write("**Document Relevance Scores:**")
                         for i, score in enumerate(similarity_scores, 1):
-                            progress_value = min(score, 1.0)  # Ensure value is between 0-1
+                            progress_value = min(score, 1.0)
                             st.progress(progress_value, text=f"Document {i}: {score:.1%}")
                     
-                    # Add warning for low scores
-                    if avg_score < 0.4:
-                        st.warning("**Low Relevance Warning**: The search results have low similarity to your question. The answer may not be accurate.")
-                    elif avg_score < 0.55:
-                        st.info("**Moderate Relevance**: Consider verifying the answer with additional sources.")
+                    # Add detailed warnings
+                    if avg_score < 0.35:
+                        st.error("**Very Low Relevance**: The search results have very low similarity to your question. "
+                                "The answer is likely inaccurate. Consider asking with more specific keywords.")
+                    elif avg_score < 0.50:
+                        st.warning("**Low Relevance**: The search results have limited similarity. "
+                                  "Verify the answer with additional sources.")
+                    elif avg_score < 0.65:
+                        st.info("**Moderate Relevance**: Results are somewhat relevant. Check source documents for details.")
                 
                 # Reference documents
                 if result.get('source_documents'):
-                    with st.expander("References"):
+                    with st.expander("📚 References (Click to expand)", expanded=False):
                         for i, doc in enumerate(result['source_documents'], 1):
-                            st.write(f"**Reference {i}:** {doc.metadata.get('source', 'Unknown')}")
-                            st.caption(doc.page_content[:200] + "...")
+                            source = doc.metadata.get('source', 'Unknown')
+                            company = doc.metadata.get('company', '?')
+                            year = doc.metadata.get('year', '?')
+                            quarter = doc.metadata.get('quarter', '?')
+                            st.write(f"**Reference {i}:** {company} {year} {quarter}")
+                            st.caption(f"📄 {source}")
 
                 # Save bot response to session state
                 st.session_state.messages.append({"role": "assistant", "content": response})
