@@ -135,7 +135,7 @@ if prompt := st.chat_input("K-Pop business questions"):
                     st.metric("Sources Used", len(result.get('source_documents', [])))
                 
                 # Expandable details
-                with st.expander("📈 Detailed Accuracy Analysis"):
+                with st.expander(" Detailed Accuracy Analysis"):
                     if similarity_scores:
                         st.write("**Individual Document Similarity Scores:**")
                         for i, score in enumerate(similarity_scores, 1):
